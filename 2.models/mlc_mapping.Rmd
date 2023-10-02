@@ -1,0 +1,427 @@
+---
+title: "Mapping the Predicted Loss of NYC Rent-Stabilization"
+author: "Camille Preel-Dumas"
+date: "Last Updated: `r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    highlight: tango
+    theme: united
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(leaflet)
+library(RColorBrewer)
+library(sf)
+library(htmltools)
+```
+
+```{r}
+# read data
+df_pred_small <- read_csv("/Users/cpreeldumas/Documents/GitHub/MLC_SP23/clean_data/df_pred_small.csv") %>% 
+  rename(BBL = bbl) %>% 
+  mutate(preds_small = ifelse(preds_small < -1, -1, preds_small)) %>% 
+  mutate(preds_small = ifelse(preds_small > 1, 1, preds_small))
+
+df_pred_big <- read_csv("/Users/cpreeldumas/Documents/GitHub/MLC_SP23/clean_data/df_pred_big.csv") %>% 
+  rename(BBL = bbl)
+
+pluto <- read_sf("/Users/cpreeldumas/Desktop/NYU/SPRING 2023/ML for Cities/Project/nyc_mappluto_23v1_shp/MapPLUTO.shp")
+
+cdist <- read_sf("/Users/cpreeldumas/Desktop/NYU/SPRING 2023/ML for Cities/Project/nycd_23a/nycd.shp") %>% 
+  rename(CD = BoroCD)
+
+tracts <- read_sf("/Users/cpreeldumas/Desktop/NYU/SPRING 2023/ML for Cities/Project/nyct2020_23a/nyct2020.shp") %>% 
+  transmute(BCT2020 = BoroCT2020)
+
+```
+
+
+
+# BBL level, Small Buildings
+```{r}
+# prep data
+df_small <- df_pred_small %>% 
+  select(BBL, preds_small, total_units_19) %>%
+  mutate(abs_change =  preds_small * total_units_19) %>% 
+  inner_join(pluto %>% select(BBL, CD, BCT2020, Borough), by = "BBL") %>% 
+  st_as_sf
+```
+
+## Change in Share
+```{r}
+pal_small <- colorBin(c("#BD0026", "#F03B20", "#FD8D3C", "#FECC5C", "#FFFFB2"), 
+                      domain = df_small$preds_small, bin = 5)
+
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(data = df_small %>% st_transform(4326),
+              stroke = ~pal_small(preds_small),
+              color = ~pal_small(preds_small),
+              weight = 5,
+              fillOpacity = 0.7) %>% 
+  addLegend("bottomright", pal = pal_small, values = df_small$preds_small, 
+            opacity = 1, title = HTML('Change in Share of RS Units <br>
+                                      Small Buildings')) 
+
+```
+
+## Absolute Change
+```{r}
+pal_small <- colorBin(c("#BD0026", "#F03B20", "#FD8D3C", "#FECC5C", "#FFFFB2"), 
+                      domain = df_small$abs_change, bin = 5)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(data = df_small %>% st_transform(4326),
+              stroke = ~pal_small(abs_change),
+              color = ~pal_small(abs_change),
+              weight = 5,
+              fillOpacity = 0.7) %>% 
+  addLegend("bottomright", pal = pal_small, values = df_small$abs_change, 
+            opacity = 1, title = HTML('Absolute Change in RS Units <br>
+                                      Small Buildings')) 
+
+```
+
+
+
+<br>
+
+****
+
+<br>
+
+# CD level
+```{r}
+# prep data
+df_small_cd <- pluto %>% 
+  st_drop_geometry() %>% 
+  select(BBL, CD, BCT2020, Borough) %>% 
+  inner_join(df_pred_small, by = "BBL") %>% 
+  group_by(CD) %>% 
+  summarise(mean_preds_small = round(mean(preds_small, na.rm = TRUE), digits = 3), 
+            total_units = sum(total_units_19, na.rm = TRUE),
+            abs_change = mean_preds_small * total_units) %>% 
+  inner_join(cdist, by = "CD") %>% 
+  st_as_sf
+
+df_big_cd <- pluto %>% 
+  st_drop_geometry() %>% 
+  select(BBL, CD, BCT2020, Borough) %>% 
+  inner_join(df_pred_big, by = "BBL") %>% 
+  group_by(CD) %>% 
+  summarise(mean_preds_big = round(mean(preds_big, na.rm = TRUE), digits = 3),
+            total_units = sum(total_units_19, na.rm = TRUE),
+            abs_change = mean_preds_big * total_units
+            ) %>% 
+  inner_join(cdist, by = "CD") %>% 
+  st_as_sf
+```
+
+## Change in Share
+
+### Small Buildings
+```{r}
+
+pal_small <- colorBin(c("#BD0026", "#F03B20", "#FD8D3C", "#FECC5C", "#FFFFB2"), 
+                      domain = df_small_cd$mean_preds_small, bin = 5)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(group = "Small Buildings",
+              data = df_small_cd %>%  st_transform(4326),
+              fillColor = ~pal_small(mean_preds_small),
+              weight = 1,
+              color = "black", 
+              fillOpacity = 0.7, 
+              popup = paste0(
+                "<b>CD: </b>",
+                df_small_cd$CD,
+                "<br>",
+                "<b>Mean Change in Share of RS Units: </b>",
+                df_small_cd$mean_preds_small
+              )) %>% 
+  addLegend("bottomright", pal = pal_small, values = df_small_cd$mean_preds_small, 
+            opacity = 1, title = HTML(
+            'CD-Level Mean Change in <br>
+            Share of RS Units <br>
+            Small Buildings')) 
+
+```
+
+### Big Buildings
+```{r}
+pal_big <- colorBin(c("#FD8D3C", "#FECC5C", "#FFFFB2"), 
+                      domain = df_big_cd$mean_preds_big, bin = 3)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+    addPolygons(
+              data = df_big_cd %>%  st_transform(4326),
+              fillColor = ~pal_big(mean_preds_big),
+              weight = 1,
+              color = "black", 
+              fillOpacity = 0.7, 
+              popup = paste0(
+                "<b>CD: </b>",
+                df_big_cd$CD,
+                "<br>",
+                "<b>Mean Change in Share of RS Units: </b>",
+                df_big_cd$mean_preds_big
+              )) %>% 
+  addLegend("bottomright", pal = pal_big, values = df_big_cd$mean_preds_big, 
+            opacity = 1, title = HTML(
+            'CD-Level Mean Change in <br>
+            Share of RS Units <br>
+            Big Buildings'))
+```
+
+## Absolute Change
+
+### Small Buildings
+```{r}
+
+pal_small <- colorBin(c("#BD0026", "#F03B20", "#FD8D3C", "#FECC5C", "#FFFFB2"), 
+                      domain = df_small_cd$abs_change, bin = 5)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(group = "Small Buildings",
+              data = df_small_cd %>%  st_transform(4326),
+              fillColor = ~pal_small(abs_change),
+              weight = 1,
+              color = "black", 
+              fillOpacity = 0.7, 
+              popup = paste0(
+                "<b>CD: </b>",
+                df_small_cd$CD,
+                "<br>",
+                "<b>Mean Change in Share: </b>",
+                df_small_cd$mean_preds_small,
+                "<br>",
+                "<b>Total 2019 Units: </b>",
+                df_small_cd$total_units,
+                "<br>",
+                "<b>Absolute Change in RS Units: </b>",
+                df_small_cd$abs_change
+              )) %>% 
+  addLegend("bottomright", pal = pal_small, values = df_small_cd$abs_change, 
+            opacity = 1, title = HTML(
+            'CD-Level Absolute Change <br>
+            in RS Units <br>
+            Small Buildings')) 
+
+```
+
+### Big Buildings
+```{r}
+pal_big <- colorBin(c("#BD0026", "#F03B20", "#FD8D3C", "#FECC5C", "#FFFFB2"), 
+                      domain = df_big_cd$abs_change, bin = 5)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+    addPolygons(
+              data = df_big_cd %>%  st_transform(4326),
+              fillColor = ~pal_big(abs_change),
+              weight = 1,
+              color = "black", 
+              fillOpacity = 0.7, 
+              popup = paste0(
+                "<b>CD: </b>",
+                df_big_cd$CD,
+                "<br>",
+                "<b>Mean Change in Share: </b>",
+                df_big_cd$mean_preds_big,
+                "<br>",
+                "<b>Total 2019 Units: </b>",
+                df_big_cd$total_units,
+                "<br>",
+                "<b>Absolute Change in RS Units: </b>",
+                df_big_cd$abs_change
+              )) %>% 
+  addLegend("bottomright", pal = pal_big, values = df_big_cd$abs_change, 
+            opacity = 1, title = HTML(
+            'CD-Level Absolute Change<br>
+            in RS Units <br>
+            Big Buildings'))
+```
+
+
+<br>
+
+****
+
+<br>
+
+# Tract Level
+```{r}
+# prep data
+df_small_tract <- pluto %>% 
+  st_drop_geometry() %>% 
+  select(BBL, CD, BCT2020, Borough) %>% 
+  inner_join(df_pred_small, by = "BBL") %>% 
+  group_by(BCT2020) %>% 
+  summarise(mean_preds_small = round(mean(preds_small, na.rm = TRUE), digits = 3),
+            total_units = sum(total_units_19, na.rm = TRUE),
+            abs_change = mean_preds_small * total_units) %>% 
+  inner_join(tracts, by = "BCT2020") %>% 
+  st_as_sf
+
+df_big_tract <- pluto %>% 
+  st_drop_geometry() %>% 
+  select(BBL, CD, BCT2020, Borough) %>% 
+  inner_join(df_pred_big, by = "BBL") %>% 
+  group_by(BCT2020) %>%  
+  summarise(mean_preds_big = round(mean(preds_big, na.rm = TRUE), digits = 3),
+            total_units = sum(total_units_19, na.rm = TRUE),
+            abs_change = mean_preds_big * total_units) %>% 
+  inner_join(tracts, by = "BCT2020") %>% 
+  st_as_sf
+```
+
+## Change in Share
+
+### Small Buildings
+```{r}
+pal_small <- colorBin(c("#BD0026", "#F03B20", "#FD8D3C", "#FECC5C", "#FFFFB2"), 
+                      domain = df_small_tract$mean_preds_small, bin = 5)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(group = "Small Buildings",
+              data = df_small_tract %>%  st_transform(4326),
+              fillColor = ~pal_small(mean_preds_small),
+              weight = 0.2,
+              color = "black", 
+              fillOpacity = 0.7, 
+              popup = paste0(
+                "<b>Tract: </b>",
+                df_small_tract$BCT2020,
+                "<br>",
+                "<b>Mean Change in Share of RS Units: </b>",
+                df_small_tract$mean_preds_small
+              )) %>% 
+  addLegend("bottomright", pal = pal_small, values = df_small_tract$mean_preds_small, 
+            opacity = 1, title = HTML(
+            'Tract-Level Mean Change in <br>
+            Share of RS Units <br>
+            Small Buildings')) 
+
+```
+
+### Big Buildings
+```{r}
+pal_big <- colorBin(c("#BD0026", "#F03B20", "#FD8D3C", "#FECC5C", "#FFFFB2"), 
+                      domain = df_big_tract$mean_preds_big, bin = 4)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+    addPolygons(
+              data = df_big_tract %>%  st_transform(4326),
+              fillColor = ~pal_big(mean_preds_big),
+              weight = 0.3,
+              color = "black", 
+              fillOpacity = 0.7, 
+              popup = paste0(
+                "<b>Tract: </b>",
+                df_big_tract$BCT2020,
+                "<br>",
+                "<b>Mean Change in Share of RS Units: </b>",
+                df_big_tract$mean_preds_big
+              )) %>% 
+  addLegend("bottomright", pal = pal_big, values = df_big_tract$mean_preds_big, 
+            opacity = 1, title = HTML(
+            'Tract-Level Mean Change in <br>
+            Share of RS Units <br>
+            Big Buildings'))
+```
+
+
+
+## Absolute Change
+
+### Small Buildings
+```{r}
+
+pal_small <- colorBin(c("#BD0026", "#F03B20", "#FECC5C", "#FFFFB2"), 
+                      domain = df_small_tract$abs_change, bin = 3)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(group = "Small Buildings",
+              data = df_small_tract %>%  st_transform(4326),
+              fillColor = ~pal_small(abs_change),
+              weight = 0.3,
+              color = "black", 
+              fillOpacity = 0.7, 
+              popup = paste0(
+                "<b>Tract: </b>",
+                df_small_tract$BCT2020,
+                "<br>",
+                "<b>Mean Change in Share: </b>",
+                df_small_tract$mean_preds_small,
+                "<br>",
+                "<b>Total 2019 Units: </b>",
+                df_small_tract$total_units,
+                "<br>",
+                "<b>Absolute Change in RS Units: </b>",
+                df_small_tract$abs_change
+              )) %>% 
+  addLegend("bottomright", pal = pal_small, values = df_small_tract$abs_change, 
+            opacity = 1, title = HTML(
+            'Tract-Level Absolute Change <br>
+            in RS Units <br>
+            Small Buildings')) 
+
+```
+
+### Big Buildings
+```{r}
+pal_big <- colorBin(c("#BD0026", "#FD8D3C", "#FECC5C", "#FFFFB2"), 
+                      domain = df_big_tract$abs_change, bin = 4)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+    addPolygons(
+              data = df_big_tract %>%  st_transform(4326),
+              fillColor = ~pal_big(abs_change),
+              weight = 0.3,
+              color = "black", 
+              fillOpacity = 0.7, 
+              popup = paste0(
+                "<b>Tract: </b>",
+                df_big_tract$BCT2020,
+                "<br>",
+                "<b>Mean Change in Share: </b>",
+                df_big_tract$mean_preds_big,
+                "<br>",
+                "<b>Total 2019 Units: </b>",
+                df_big_tract$total_units,
+                "<br>",
+                "<b>Absolute Change in RS Units: </b>",
+                df_big_tract$abs_change
+              )) %>% 
+  addLegend("bottomright", pal = pal_big, values = df_big_tract$abs_change, 
+            opacity = 1, title = HTML(
+            'Tract-Level Absolute Change<br>
+            in RS Units <br>
+            Big Buildings'))
+```
+
+
+
+
+
+
+

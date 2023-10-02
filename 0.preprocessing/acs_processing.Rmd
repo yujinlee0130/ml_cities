@@ -1,0 +1,245 @@
+---
+title: "acs_processing"
+author: "Camille Preel-Dumas"
+date: "2023-04-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(naniar)
+```
+
+# read data
+```{r}
+acs <- read_csv("/Users/cpreeldumas/Documents/GitHub/MLC_SP23/raw_data/acs5yr_tract.csv") %>% 
+  select(-starts_with("unit_built_pre1989")) #removing these vars, they're all NA
+
+rentstab <- read_csv("/Users/cpreeldumas/Documents/GitHub/MLC_SP23/clean_data/rs_shares_19_21.csv")
+
+pluto <- read_csv("/Users/cpreeldumas/Desktop/NYU/SPRING 2023/ML for Cities/Project/pluto_23v1.csv") %>% 
+  select(bbl, bct2020, ct2010, borough, tract2010, cd)
+```
+
+# filter pluto to rentstab universe
+```{r}
+missing_pluto <- anti_join(rentstab, pluto, by = "bbl")
+pluto_univ <- pluto %>% filter(bbl %in% rentstab$bbl)
+```
+
+# construct GEOID in pluto
+```{r}
+pluto_univ2 <- pluto_univ %>% 
+  mutate(geoid_21 = case_when(borough == "SI" ~ str_c("36085", str_sub(bct2020, start = 2, end = 7)),
+                              borough == "QN" ~ str_c("36081", str_sub(bct2020, start = 2, end = 7)),
+                              borough == "BX" ~ str_c("36005", str_sub(bct2020, start = 2, end = 7)),
+                              borough == "BK" ~ str_c("36047", str_sub(bct2020, start = 2, end = 7)),
+                              borough == "MN" ~ str_c("36061", str_sub(bct2020, start = 2, end = 7)))) %>% 
+   mutate(
+    #add trailing 0s for decimal points where tract2010 is 4 digits only
+    tract2010_clean = ifelse(str_length(tract2010) == 4, 
+                             paste0(tract2010, "00"),
+                             tract2010),
+    #paste tract2000_clean with borough ID
+    geoid_19 =
+      case_when(
+        borough == "SI" & !is.na(tract2010) ~ paste0("36085", tract2010_clean),
+        borough == "QN" & !is.na(tract2010) ~ paste0("36081", tract2010_clean),
+        borough == "BX" & !is.na(tract2010) ~ paste0("36005", tract2010_clean),
+        borough == "BK" & !is.na(tract2010) ~ paste0("36047", tract2010_clean),
+        borough == "MN" & !is.na(tract2010) ~ paste0("36061", tract2010_clean)))
+
+
+#check length = 11 for all
+min(nchar(pluto_univ2$geoid_19), na.rm = T)
+max(nchar(pluto_univ2$geoid_19), na.rm = T)
+
+min(nchar(pluto_univ2$geoid_21), na.rm = T)
+max(nchar(pluto_univ2$geoid_21), na.rm = T)
+```
+
+# check missing tract IDs
+```{r}
+pluto_univ2 %>% 
+  filter(is.na(geoid_19) | is.na(geoid_21))
+```
+
+# check tract IDs that change between 2020 and 2010
+```{r}
+pluto_univ2 %>% 
+  group_by(geoid_21, geoid_19) %>% 
+  tally() %>% 
+  filter(geoid_21 != geoid_19)
+```
+
+# prep acs for join
+```{r}
+acs_19 <- acs %>% 
+  filter(year == 2019) %>% 
+  select(-starts_with("fc_"), -year, -span, -sum_level, -geoid_full, -geo_type) %>% 
+  rename_with(~paste0(.x, "_19"), everything()) %>% 
+  mutate(geoid_19 = as.character(geoid_19))
+  
+acs_21 <- acs %>% 
+  filter(year == 2021) %>% 
+  select(-starts_with("fc_"), -year, -span, -sum_level, -geoid_full, -geo_type) %>% 
+  rename_with(~paste0(.x, "_21"), everything()) %>% 
+  mutate(geoid_21 = as.character(geoid_21))
+  
+```
+
+# join acs-pluto
+```{r}
+acs_bbl_full <- pluto_univ2 %>% 
+  select(bbl, cd, geoid_19, geoid_21) %>% 
+  left_join(acs_19, by = "geoid_19") %>% 
+  left_join(acs_21, by = "geoid_21") %>% 
+  rename(tract_19 = geoid_19, 
+         tract_21 = geoid_21)
+
+#keeping just percentages, averages, medians, and diversity index
+acs_bbl <- acs_bbl_full %>% 
+  select(bbl, cd, tract_19, geo_name_19, tract_21, geo_name_21, 
+         ends_with(c("avg_19", "med_19", "pct_19", "idx_19",
+                     "avg_21", "med_21", "pct_21", "idx_21")))
+```
+
+# check acs-pluto join
+```{r}
+acs_bbl %>% 
+  group_by(is.na(tract_19), is.na(tract_21)) %>% 
+  tally()
+
+acs_bbl %>% 
+  filter(is.na(tract_19) | is.na(tract_21))
+
+```
+
+# preliminary check joining to rentstab, 43 BBLs don't match
+```{r}
+rentstab_acs <- rentstab %>% 
+  left_join(acs_bbl, by = "bbl") 
+
+rentstab_acs %>% 
+  group_by(is.na(tract_19), is.na(tract_21)) %>% 
+  tally()
+
+missing_acs <- rentstab_acs %>% 
+  filter(is.na(tract_19) | is.na(tract_21)) %>% select(bbl)
+```
+
+# they don't match bc pluto doesn't have their tract ID
+```{r}
+pluto %>% filter(bbl %in% missing_acs$bbl)
+
+anti_join(missing_acs, missing_pluto, by = "bbl")
+```
+
+
+```{r}
+glimpse(acs_bbl)
+
+remove_cols <- c(
+'geo_name_19',
+'geo_name_21',
+'pop_1_4_units_own_pct_19',
+'pop_1_4_units_rent_pct_19',
+'pop_1_4_units_pct_19',
+'pop_5p_units_own_pct_19',
+'pop_5p_units_rent_pct_19',
+'pop_5p_units_pct_19',
+'pop_1_4_units_own_pct_21',
+'pop_1_4_units_rent_pct_21',
+'pop_1_4_units_pct_21',
+'pop_5p_units_own_pct_21',
+'pop_5p_units_rent_pct_21',
+'pop_5p_units_pct_21',
+'unit_occ_white_rent_pct_19',
+'unit_occ_black_rent_pct_19',
+'unit_occ_asian_rent_pct_19',
+'unit_occ_hisp_rent_pct_19',
+'unit_occ_white_rent_pct_21',
+'unit_occ_black_rent_pct_21',
+'unit_occ_asian_rent_pct_21',
+'unit_occ_hisp_rent_pct_21',
+'unit_50p_unit_own_pct_21',
+'unit_50p_unit_rent_pct_21',
+'unit_50p_unit_pct_21',
+'unit_50p_unit_own_pct_19',
+'unit_50p_unit_rent_pct_19',
+'unit_50p_unit_pct_19'
+)
+```
+
+# remove columns and impute means
+```{r}
+acs_bbl_final <- acs_bbl %>% 
+  filter(!is.na(tract_19) & !is.na(tract_21)) %>%
+  select(!all_of(remove_cols)) %>%
+  mutate(
+    bbl = as.character(bbl),
+    cd = as.character(cd)) %>% 
+  group_by(cd) %>%
+  mutate(
+    across(
+    where(is.numeric),
+    ~replace_na(., mean(., na.rm=TRUE))
+    )) %>% 
+  ungroup()
+
+miss_var_summary(acs_bbl)
+miss_var_summary(acs_bbl_final)
+
+#spot checking median inc
+acs_bbl_final %>% 
+  filter(bbl %in% c(acs_bbl %>% 
+                      filter(!is.na(tract_19) & !is.na(tract_21) & is.na(hh_inc_med_19)) %>% 
+                      pull(bbl))) %>% 
+  group_by(cd, hh_inc_med_19) %>% 
+  tally()
+```
+
+# bbl 4000260003 is problematic
+```{r}
+#rowwise missingness? 
+acs_bbl %>% 
+  filter(!is.na(tract_19) & !is.na(tract_21)) %>%
+  select(!all_of(remove_cols)) %>%
+  select(where(is.numeric), -cd) %>%
+  miss_case_summary()
+
+#this bbl has 48% missingness, almost everything is missing for 2021
+acs_bbl %>% 
+  filter(!is.na(tract_19) & !is.na(tract_21)) %>%
+  select(!all_of(remove_cols)) %>%
+  select(where(is.numeric), -cd) %>%
+  slice(36717)
+  
+acs_bbl %>% 
+  filter(bbl == "4000260003") %>% 
+  filter(!is.na(tract_19) & !is.na(tract_21)) %>%
+  select(!all_of(remove_cols)) %>%
+  select(-cd, -tract_19, -tract_21) %>%  
+  pivot_longer(-bbl, names_to = "var", values_to = "value") %>% 
+  filter(is.na(value))
+
+acs_bbl %>% 
+  filter(tract_21 == "36081000103")
+
+rentstab %>% 
+  filter(bbl == "4000260003")
+```
+# save data
+```{r}
+write_csv(acs_bbl_final, "/Users/cpreeldumas/Documents/GitHub/MLC_SP23/clean_data/acs_bbl.csv")
+
+# acs_bbl_full %>% 
+#   filter(!is.na(tract_19) & !is.na(tract_21)) %>%
+#   write_csv("/Users/cpreeldumas/Documents/GitHub/MLC_SP23/clean_data/acs_bbl_full.csv")
+```
+
+
